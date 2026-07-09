@@ -1,0 +1,15 @@
+[Unit]
+Description=triage-local — Local LLM Security Alert Triage Bot
+After=network.target ollama.service
+
+[Service]
+Type=simple
+User=rootbox
+WorkingDirectory=/home/rootbox/triage-local
+EnvironmentFile=/home/rootbox/triage-local/.env
+ExecStart=/home/rootbox/triage-local/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
