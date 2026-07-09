@@ -13,6 +13,9 @@ import cascade
 import ocr
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full request URLs which include the bot token — suppress to avoid
+# token exposure in journald and any downstream log aggregators
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
