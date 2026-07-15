@@ -1,20 +1,26 @@
 # triage-localLLM
 
-Security alert triage on a local LLM. Drop in an alert as text or a phone screenshot — get back structured output: severity, MITRE techniques, false positive probability, and a recommended action. Nothing leaves your machine unless the local model isn't confident, and even then sensitive data gets scrubbed before it touches a cloud API.
+Privacy-preserving security triage toolkit — local LLM inference for alert triage and cloud finding risk scoring. Nothing leaves your machine unless the local model isn't confident, and even then sensitive data gets scrubbed before it touches a cloud API.
 
-## The problem this solves
+## Tools
 
-When you're triaging alerts in an MDR or IR environment, the alerts contain real data — internal IPs, hostnames, usernames, account IDs. Piping that directly into a cloud LLM violates data handling agreements and in some cases client NDAs. Most "AI-assisted" triage tools ignore this entirely.
+| Tool | Input | Use case |
+|------|-------|----------|
+| `bot.py` | Telegram + alert text | Real-time SIEM alert triage via Telegram interface |
+| `wiz_triage.py` | Wiz CSV export | Re-prioritize cloud findings by PHI proximity and exploitability |
 
-This project runs inference locally (Ollama + llama3.1:8b) and only escalates to Claude when the local model isn't confident or when severity is CRITICAL. Before any escalation, a scrubber strips PII from the payload.
+---
 
-## How it works
+## Alert Triage (`bot.py`)
+
+### The problem
+
+When triaging alerts in an MDR or IR environment, alerts contain real data — internal IPs, hostnames, usernames, account IDs. Piping that directly into a cloud LLM violates data handling agreements and in some cases client NDAs. Most "AI-assisted" triage tools ignore this entirely.
+
+### How it works
 
 ```
-Telegram (text or photo)
-        │
-        ▼
-   OCR (Tesseract)         ← photo inputs only
+Alert text (Telegram)
         │
         ▼
   Local Triage Engine
@@ -30,26 +36,87 @@ Telegram (text or photo)
           (strips IPs, emails, usernames, tokens, ARNs)
                   │
                   ▼
-          Claude API
+          Claude API (cloud escalation)
                   │
                   └──► Return enriched analysis to Telegram
 ```
 
-## Features
+### Features
 
 - Local inference via Ollama — llama3.1:8b, 4.9GB, runs on a GTX 1080 Ti
-- Telegram interface — works from your phone, paste text or send a screenshot
-- OCR support — snap a photo of any screen, bot extracts the text and triages it
+- Telegram interface — paste alert text, get structured triage back
 - Structured output — severity, FP probability, MITRE ATT&CK techniques, confidence score, recommended action
 - LLM cascade — auto-escalates to Claude when local model confidence is low or severity is CRITICAL
 - PII scrubbing — before any cloud call, strips internal IPs (RFC 1918), emails, usernames, AWS ARNs, hostnames, and session tokens
+
+### Example output
+
+```
+CRITICAL — FP probability: 8%
+Summary: Lateral movement via pass-the-hash from compromised workstation
+MITRE: T1550.002, T1021.002
+Action: Isolate source endpoint immediately, collect memory dump
+Confidence: 82% | Source: Local (llama3.1:8b)
+```
+
+---
+
+## Wiz Finding Triage (`wiz_triage.py`)
+
+Re-prioritizes Wiz cloud security findings using local LLM risk scoring tuned for healthcare environments. Built for environments where PHI proximity changes the risk equation — a misconfigured S3 bucket near member data is not the same as one near build artifacts.
+
+### How it works
+
+1. **Auto-dismiss** — filters non-production resources, resolved findings, and informational noise before spending any LLM cycles
+2. **PHI heuristic** — quick keyword-based PHI proximity estimate (runs in memory, no LLM call)
+3. **LLM scoring** — local model assesses each finding across three axes:
+   - `phi_proximity` — how likely is this resource to store or access PHI?
+   - `exploitability` — how likely is active exploitation in this context?
+   - `blast_radius` — how bad if it's compromised?
+4. **Risk ranking** — re-sorts by composite score, labels CRITICAL-PHI / HIGH / MEDIUM / LOW
+
+### Usage
+
+```bash
+# Demo mode — no Wiz needed, uses built-in healthcare mock findings
+python wiz_triage.py --demo
+
+# Real Wiz export
+python wiz_triage.py --input findings.csv
+
+# Write risk-ranked results to CSV
+python wiz_triage.py --input findings.csv --output risk_ranked.csv
+```
+
+### Example output
+
+```
+[01/10] CRITICAL     S3 bucket with member claims data publicly accessible
+            [CRITICAL-PHI] risk=9/10  phi=9  exploit=8  [local_llm]
+            S3 bucket contains member claims data — PHI under HIPAA, public access is a breach.
+
+[08/10] MEDIUM       EC2 instance with public IP
+            AUTO-DISMISS: Non-production resource
+
+======================================================================
+  TRIAGE RESULTS
+======================================================================
+  Total processed : 10
+  Auto-dismissed  : 2  (non-prod, resolved, informational)
+  AI-scored       : 8
+  CRITICAL-PHI    : 7
+  HIGH            : 0
+  MEDIUM          : 1
+  LOW             : 0
+```
+
+---
 
 ## Requirements
 
 - Linux with NVIDIA GPU (6GB+ VRAM — tested on GTX 1080 Ti)
 - [Ollama](https://ollama.com) with `llama3.1:8b` pulled
 - Python 3.10+
-- Tesseract OCR: `sudo apt install tesseract-ocr`
 
 ## Setup
 
@@ -62,43 +129,15 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Fill in your Telegram bot token (required) and Anthropic API key (optional)
+# Fill in your Telegram bot token and optionally your Anthropic API key
 ```
-
-Get a Telegram token: message `@BotFather` on Telegram → `/newbot`.
 
 ## Configuration
 
-```bash
+```env
 TELEGRAM_TOKEN=your_bot_token
 ANTHROPIC_API_KEY=your_key          # optional — only used for cloud escalation
 ESCALATION_CONFIDENCE_THRESHOLD=70  # escalate if local confidence < this value
-```
-
-## Running
-
-```bash
-source .env && venv/bin/python bot.py
-```
-
-A systemd unit is included (`triage-local.service`) if you want it running as a background service.
-
-## Usage
-
-Once the bot is up, open Telegram and:
-
-- Send alert text directly → immediate triage
-- Send a photo of your screen → bot OCRs and triages
-- `/start` → welcome message
-
-### Example output
-
-```
-CRITICAL — FP probability: 8%
-Summary: Lateral movement via pass-the-hash from compromised workstation
-MITRE: T1550.002, T1021.002
-Action: Isolate source endpoint immediately, collect memory dump
-Confidence: 82% | Source: Local (llama3.1:8b)
 ```
 
 ## PII scrubbing
@@ -119,14 +158,14 @@ Before anything reaches the Claude API, the scrubber replaces:
 
 ```
 triage-localLLM/
-├── bot.py                 # Telegram bot — handles text and photo inputs
+├── bot.py                 # Telegram bot interface
 ├── triage.py              # Local LLM triage engine (Ollama)
 ├── cascade.py             # Escalation logic + Claude API integration
 ├── scrubber.py            # PII scrubbing before cloud transmission
-├── ocr.py                 # Tesseract OCR for image inputs
+├── wiz_triage.py          # Wiz finding triage with PHI-aware risk scoring
 ├── requirements.txt
 ├── .env.example
-└── triage-local.service   # systemd unit
+└── triage-local.service   # systemd unit for background deployment
 ```
 
 ## License
