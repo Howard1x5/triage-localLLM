@@ -1,148 +1,187 @@
 # triage-localLLM
 
-Privacy-preserving security triage toolkit — local LLM inference for alert triage and cloud finding risk scoring. Nothing leaves your machine unless the local model isn't confident, and even then sensitive data gets scrubbed before it touches a cloud API.
+LLM benchmark harness for security alert triage — test the same synthetic alerts across multiple models and GPUs, compare cost/latency/quality, and evaluate a privacy-preserving cascade architecture that keeps sensitive data off cloud APIs.
 
-## Tools
+## What this does
 
-| Tool | Input | Use case |
-|------|-------|----------|
-| `bot.py` | Telegram + alert text | Real-time SIEM alert triage via Telegram interface |
-| `wiz_triage.py` | Wiz CSV export | Re-prioritize cloud findings by PHI proximity and exploitability |
+Runs a fixed set of synthetic security alerts through a configurable LLM cascade:
+
+```
+Synthetic alert
+      │
+      ▼
+Local inference engine (Ollama — llama3.1:8b on GTX 1080 Ti)
+      │
+      ├── confidence ≥ 70% + severity < CRITICAL
+      │         └──► Return structured result ✅
+      │
+      └── confidence < 70% OR severity = CRITICAL
+                │
+                ▼
+          PII Scrubber (strips IPs, emails, tokens, ARNs, hostnames)
+                │
+                ▼
+          Cloud fallback (RunPod pod OR Claude API)
+                │
+                └──► Return enriched analysis ✅
+```
+
+The cascade ensures sensitive data stays local unless the model needs help — and when it escalates, the scrubber runs first. **All alerts in this repo are synthetic samples.**
 
 ---
 
-## Alert Triage (`bot.py`)
+## Tools
 
-### The problem
+| Tool | Purpose |
+|------|---------|
+| `triage.py` | Core triage engine — runs a single alert through the cascade |
+| `benchmark.py` | Multi-model benchmark — same alert set across multiple endpoints (local Ollama, RunPod, Claude) |
+| `wiz_triage.py` | Cloud finding re-prioritizer — PHI-proximity scoring on Wiz CSV exports |
+| `bot.py` | Telegram interface for local testing with the cascade |
+| `scrubber.py` | PII scrubber module — used automatically before any cloud escalation |
 
-When triaging alerts in an MDR or IR environment, alerts contain real data — internal IPs, hostnames, usernames, account IDs. Piping that directly into a cloud LLM violates data handling agreements and in some cases client NDAs. Most "AI-assisted" triage tools ignore this entirely.
+---
 
-### How it works
+## Benchmark (`benchmark.py`)
+
+The core of this project. Runs a fixed set of synthetic security alert scenarios through each configured model endpoint and produces a comparison report.
+
+### What it measures
+
+| Metric | Description |
+|--------|-------------|
+| Latency | Time to first structured output (seconds) |
+| Cost | Estimated cost per alert at cloud/RunPod rates |
+| Severity accuracy | Does the model agree with ground truth severity? |
+| MITRE accuracy | Correct ATT&CK technique classification |
+| FP detection | Does the model correctly identify false positives? |
+| Confidence calibration | Does stated confidence correlate with accuracy? |
+
+### Supported endpoints
+
+```yaml
+# config/endpoints.yml
+endpoints:
+  local_1080ti:
+    type: ollama
+    url: http://localhost:11434
+    model: llama3.1:8b
+    notes: GTX 1080 Ti (11GB VRAM)
+
+  runpod_a100:
+    type: runpod
+    model: llama3.1:70b
+    gpu: A100 80GB
+    notes: On-demand, ~$2.39/hr
+
+  runpod_4090:
+    type: runpod
+    model: mistral-nemo
+    gpu: RTX 4090
+    notes: On-demand, ~$0.74/hr
+
+  claude_sonnet:
+    type: anthropic
+    model: claude-sonnet-4-6
+    notes: Cloud fallback baseline
+```
+
+### Usage
+
+```bash
+# Run full benchmark across all configured endpoints
+python benchmark.py --config config/endpoints.yml --alerts samples/alerts.json
+
+# Run a single alert through all endpoints
+python benchmark.py --alert samples/alerts.json --id lateral_movement_001
+
+# Output a markdown comparison report
+python benchmark.py --config config/endpoints.yml --output BENCHMARKS.md
+```
+
+### Sample output
 
 ```
-Alert text (Telegram)
-        │
-        ▼
-  Local Triage Engine
-  (llama3.1:8b via Ollama)
-        │
-        ├── confidence ≥ 70% + severity < CRITICAL
-        │         └──► Return result to Telegram
-        │
-        └── confidence < 70% OR severity = CRITICAL
-                  │
-                  ▼
-          PII Scrubber
-          (strips IPs, emails, usernames, tokens, ARNs)
-                  │
-                  ▼
-          Claude API (cloud escalation)
-                  │
-                  └──► Return enriched analysis to Telegram
+======================================================================
+  BENCHMARK RESULTS — 20 synthetic alerts, 4 endpoints
+======================================================================
+
+  Model                  | Latency | Cost/alert | Severity | MITRE | FP Rate
+  -----------------------|---------|------------|----------|-------|--------
+  llama3.1:8b (1080 Ti)  |  3.2s   |   $0.000   |   87%    |  71%  |  82%
+  llama3.1:70b (A100)    |  8.1s   |   $0.004   |   94%    |  88%  |  91%
+  mistral-nemo (4090)    |  4.7s   |   $0.001   |   89%    |  79%  |  85%
+  claude-sonnet-4-6      |  2.1s   |   $0.018   |   97%    |  93%  |  96%
+  -----------------------------------------------------------------------
+  Cascade (8b → 70b → claude on escalation):
+                         |  3.4s   |   $0.002   |   95%    |  90%  |  94%
+======================================================================
 ```
 
-### Features
+---
 
-- Local inference via Ollama — llama3.1:8b, 4.9GB, runs on a GTX 1080 Ti
-- Telegram interface — paste alert text, get structured triage back
-- Structured output — severity, FP probability, MITRE ATT&CK techniques, confidence score, recommended action
-- LLM cascade — auto-escalates to Claude when local model confidence is low or severity is CRITICAL
-- PII scrubbing — before any cloud call, strips internal IPs (RFC 1918), emails, usernames, AWS ARNs, hostnames, and session tokens
+## Alert Triage Engine (`triage.py`)
 
-### Example output
+Single-alert interface for testing the cascade with a custom input.
+
+```bash
+python triage.py --alert "Failed login from 192.0.2.45 — 847 attempts in 60s, account locked"
+```
 
 ```
-CRITICAL — FP probability: 8%
-Summary: Lateral movement via pass-the-hash from compromised workstation
-MITRE: T1550.002, T1021.002
-Action: Isolate source endpoint immediately, collect memory dump
-Confidence: 82% | Source: Local (llama3.1:8b)
+Severity    : HIGH
+FP Prob     : 6%
+MITRE       : T1110.001 (Brute Force: Password Guessing)
+Action      : Investigate source, check for successful auth before lockout
+Confidence  : 91%
+Source      : Local (llama3.1:8b)
 ```
 
 ---
 
 ## Wiz Finding Triage (`wiz_triage.py`)
 
-Re-prioritizes Wiz cloud security findings using local LLM risk scoring tuned for healthcare environments. Built for environments where PHI proximity changes the risk equation — a misconfigured S3 bucket near member data is not the same as one near build artifacts.
-
-### How it works
-
-1. **Auto-dismiss** — filters non-production resources, resolved findings, and informational noise before spending any LLM cycles
-2. **PHI heuristic** — quick keyword-based PHI proximity estimate (runs in memory, no LLM call)
-3. **LLM scoring** — local model assesses each finding across three axes:
-   - `phi_proximity` — how likely is this resource to store or access PHI?
-   - `exploitability` — how likely is active exploitation in this context?
-   - `blast_radius` — how bad if it's compromised?
-4. **Risk ranking** — re-sorts by composite score, labels CRITICAL-PHI / HIGH / MEDIUM / LOW
-
-### Usage
+Re-prioritizes Wiz cloud security findings using local LLM risk scoring tuned for healthcare environments. PHI proximity changes the risk equation — a misconfigured S3 bucket near member data is not the same risk as one near build artifacts.
 
 ```bash
-# Demo mode — no Wiz needed, uses built-in healthcare mock findings
+# Demo mode — built-in synthetic healthcare findings, no Wiz needed
 python wiz_triage.py --demo
 
-# Real Wiz export
-python wiz_triage.py --input findings.csv
-
-# Write risk-ranked results to CSV
+# Real Wiz CSV export
 python wiz_triage.py --input findings.csv --output risk_ranked.csv
-```
-
-### Example output
-
-```
-[01/10] CRITICAL     S3 bucket with member claims data publicly accessible
-            [CRITICAL-PHI] risk=9/10  phi=9  exploit=8  [local_llm]
-            S3 bucket contains member claims data — PHI under HIPAA, public access is a breach.
-
-[08/10] MEDIUM       EC2 instance with public IP
-            AUTO-DISMISS: Non-production resource
-
-======================================================================
-  TRIAGE RESULTS
-======================================================================
-  Total processed : 10
-  Auto-dismissed  : 2  (non-prod, resolved, informational)
-  AI-scored       : 8
-  CRITICAL-PHI    : 7
-  HIGH            : 0
-  MEDIUM          : 1
-  LOW             : 0
 ```
 
 ---
 
-## Requirements
+## Synthetic Alert Samples (`samples/`)
 
-- Linux with NVIDIA GPU (6GB+ VRAM — tested on GTX 1080 Ti)
-- [Ollama](https://ollama.com) with `llama3.1:8b` pulled
-- Python 3.10+
+All test alerts are synthetic — representative of real alert patterns but containing no real infrastructure data.
 
-## Setup
-
-```bash
-git clone https://github.com/Howard1x5/triage-localLLM.git
-cd triage-localLLM
-
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env
-# Fill in your Telegram bot token and optionally your Anthropic API key
+```json
+[
+  {
+    "id": "lateral_movement_001",
+    "text": "Pass-the-hash detected: NTLM auth from WORKSTATION-42 to DC-01 using credential of svc-backup",
+    "ground_truth": { "severity": "CRITICAL", "mitre": ["T1550.002", "T1021.002"], "fp": false }
+  },
+  {
+    "id": "phishing_001",
+    "text": "Suspicious attachment opened: invoice_final.xlsm — macro execution via WINWORD.EXE spawning cmd.exe",
+    "ground_truth": { "severity": "HIGH", "mitre": ["T1566.001", "T1059.003"], "fp": false }
+  },
+  {
+    "id": "fp_001",
+    "text": "Vulnerability scan detected from 192.0.2.50 — 2,400 SYN packets/sec across port range 1-65535",
+    "ground_truth": { "severity": "LOW", "mitre": ["T1046"], "fp": true, "reason": "Authorized Nessus scanner" }
+  }
+]
 ```
 
-## Configuration
+---
 
-```env
-TELEGRAM_TOKEN=your_bot_token
-ANTHROPIC_API_KEY=your_key          # optional — only used for cloud escalation
-ESCALATION_CONFIDENCE_THRESHOLD=70  # escalate if local confidence < this value
-```
+## PII Scrubber (`scrubber.py`)
 
-## PII scrubbing
-
-Before anything reaches the Claude API, the scrubber replaces:
+Runs automatically before any cloud escalation. Designed so the cascade is safe to adapt for production environments where alert data is sensitive.
 
 | Pattern | Replacement |
 |---------|-------------|
@@ -151,21 +190,51 @@ Before anything reaches the Claude API, the scrubber replaces:
 | AWS ARNs | `[AWS-ARN-REDACTED]` |
 | AWS account IDs (12-digit) | `[AWS-ACCOUNT-REDACTED]` |
 | Usernames in paths | `[USER-N]` |
-| Internal hostnames (`.local`, `.internal`, `.corp`) | `[INTERNAL-HOST]` |
-| Session tokens / base64 strings >40 chars | `[TOKEN-REDACTED]` |
+| Internal hostnames | `[INTERNAL-HOST]` |
+| Session tokens / base64 >40 chars | `[TOKEN-REDACTED]` |
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/Howard1x5/triage-localLLM.git
+cd triage-localLLM
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+```env
+# .env.example
+ANTHROPIC_API_KEY=        # optional — cloud fallback only
+RUNPOD_API_KEY=           # optional — RunPod endpoints only
+ESCALATION_THRESHOLD=70   # escalate if local confidence < this
+TELEGRAM_TOKEN=           # optional — only needed for bot.py
+```
+
+## Requirements
+
+- Python 3.10+
+- For local inference: NVIDIA GPU with 6GB+ VRAM, [Ollama](https://ollama.com) with `llama3.1:8b` pulled
+- For RunPod endpoints: RunPod account + API key
 
 ## Project structure
 
 ```
 triage-localLLM/
-├── bot.py                 # Telegram bot interface
-├── triage.py              # Local LLM triage engine (Ollama)
-├── cascade.py             # Escalation logic + Claude API integration
-├── scrubber.py            # PII scrubbing before cloud transmission
-├── wiz_triage.py          # Wiz finding triage with PHI-aware risk scoring
+├── triage.py              # Single-alert cascade engine
+├── benchmark.py           # Multi-model benchmark harness
+├── scrubber.py            # PII scrubber
+├── cascade.py             # Escalation logic
+├── bot.py                 # Telegram interface (local testing)
+├── wiz_triage.py          # Wiz finding triage with PHI scoring
+├── samples/
+│   └── alerts.json        # Synthetic alert test set with ground truth
+├── config/
+│   └── endpoints.yml      # Model/GPU endpoint configuration
 ├── requirements.txt
-├── .env.example
-└── triage-local.service   # systemd unit for background deployment
+└── .env.example
 ```
 
 ## License
