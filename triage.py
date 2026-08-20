@@ -1,6 +1,7 @@
 import requests
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,25 @@ Respond with exactly this JSON structure:
 
 def triage(alert_text: str) -> dict:
     prompt = TRIAGE_PROMPT.format(alert_text=alert_text.strip())
+
+    # Even at temperature 0.1 the same alert can come back with a different
+    # severity between runs, which is bad for a triage tool: an analyst
+    # re-running a case should get the same verdict, and "why was this HIGH
+    # yesterday and CRITICAL today" is not a question you want to answer.
+    # Setting TRIAGE_SEED pins Ollama's sampler so results are reproducible.
+    # Unset by default to preserve existing behaviour.
+    options = {
+        "num_ctx": 4096,
+        "temperature": 0.1,
+        "top_p": 0.9,
+    }
+    _seed = os.getenv("TRIAGE_SEED")
+    if _seed:
+        try:
+            options["seed"] = int(_seed)
+        except ValueError:
+            pass
+
     try:
         resp = requests.post(
             OLLAMA_URL,
@@ -34,11 +54,7 @@ def triage(alert_text: str) -> dict:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
-                "options": {
-                    "num_ctx": 4096,
-                    "temperature": 0.1,
-                    "top_p": 0.9,
-                },
+                "options": options,
             },
             timeout=120,
         )
