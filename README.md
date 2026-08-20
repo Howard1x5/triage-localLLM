@@ -237,6 +237,10 @@ triage-localLLM/
 └── .env.example
 ```
 
+## Roadmap: SOC Pipeline Integration
+
+Designed to sit downstream of [detection-as-code](https://github.com/Howard1x5/detection-as-code)'s Sigma/YARA/Wazuh detections as the triage layer, and upstream of [ARGUS](https://github.com/Howard1x5/argus) for cases that need deeper investigation. High-severity or low-confidence results are intended to hand off to ARGUS rather than being resolved by triage alone. See detection-as-code's README for the full pipeline picture.
+
 ## License
 
 MIT
