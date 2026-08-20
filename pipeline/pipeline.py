@@ -15,12 +15,18 @@ Usage:
     python3 pipeline.py --alert-id kerberoast    # run a specific demo alert
     python3 pipeline.py --alert-file alert.txt   # triage an alert from a file
     python3 pipeline.py --alert-text "..."       # triage an inline alert string
+    python3 pipeline.py --alert-json a.json      # a REAL captured Wazuh alert
+    python3 pipeline.py --list-scenarios         # show threat-intel scenarios
+    python3 pipeline.py --scenario clickfix_stealc
 """
 
 import argparse
 import json
 import os
+import subprocess
 import sys
+
+SCENARIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios")
 
 TRIAGE_LOCAL_PATH = os.getenv(
     "TRIAGE_LOCAL_PATH", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -177,6 +183,129 @@ def load_wazuh_alert(path: str) -> dict:
     return last
 
 
+def list_scenarios() -> list:
+    """Scenario names available in pipeline/scenarios/."""
+    if not os.path.isdir(SCENARIO_DIR):
+        return []
+    return sorted(
+        f[:-5] for f in os.listdir(SCENARIO_DIR) if f.endswith(".json")
+    )
+
+
+def load_scenario(name: str) -> dict:
+    """Load a threat-intel scenario by name from pipeline/scenarios/."""
+    path = os.path.join(SCENARIO_DIR, f"{name}.json")
+    if not os.path.isfile(path):
+        avail = ", ".join(list_scenarios()) or "(none found)"
+        raise ValueError(f"unknown scenario {name!r}. Available: {avail}")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def format_scenario(scenario: dict) -> str:
+    """Render a scenario into the alert text the triage stage consumes.
+
+    Scenarios carry richer context than a bare Wazuh alert (campaign intel,
+    kill chain, provenance) but the triage stage should see roughly what an
+    analyst sees in their queue: the detection, the telemetry fields, and
+    the MITRE mapping. The intel block is deliberately NOT fed to the model --
+    including the campaign name and 'delivers: StealC' would hand the model
+    the answer and make the triage result meaningless as a signal.
+    """
+    alert = scenario.get("alert", {})
+    src = scenario.get("source", {})
+    mitre = scenario.get("mitre", {})
+
+    lines = [
+        f"Alert -- {alert.get('description', scenario.get('title', 'unknown'))}",
+        f"Severity level: {alert.get('level', 'n/a')}",
+        f"Telemetry source: {src.get('telemetry', 'unknown')}",
+        f"Detection: {src.get('detection', 'unknown')}",
+    ]
+    if mitre.get("id"):
+        techniques = ", ".join(mitre["id"])
+        tactics = ", ".join(mitre.get("tactic", []))
+        lines.append(f"MITRE ATT&CK: {techniques}" + (f" ({tactics})" if tactics else ""))
+    if alert.get("host"):
+        lines.append(f"Host: {alert['host']}")
+    if alert.get("user"):
+        lines.append(f"User: {alert['user']}")
+    if scenario.get("timestamp"):
+        lines.append(f"Timestamp: {scenario['timestamp']}")
+
+    for key, val in (alert.get("fields") or {}).items():
+        lines.append(f"{key}: {val}")
+
+    return "\n".join(lines) + "\n"
+
+
+def run_argus_investigation(case_name: str, alert_text: str, reason: str) -> dict:
+    """Actually invoke ARGUS's LLM backend for a real investigation.
+
+    Only works where ARGUS is importable. ARGUS lives on the workstation, not
+    on the triage host (its dependency set -- weasyprint/pandas/python-evtx --
+    is heavy and the triage host only needs Ollama), so in the normal two-host
+    demo this returns unavailable and the caller falls back to printing the
+    handoff. Run with --argus-exec on a host where ARGUS is installed.
+
+    Uses ARGUS's llm_backend, which defaults to the 'subscription' backend
+    (shells out to the `claude` CLI). No metered API spend.
+    """
+    argus_src = os.getenv("ARGUS_SRC", os.path.expanduser(
+        "~/Documents/Projects/local/argus/src"))
+    if argus_src not in sys.path:
+        sys.path.insert(0, argus_src)
+    try:
+        from argus.llm_backend import call_llm, get_backend, backend_available
+    except ImportError as e:
+        return {
+            "handoff": "argus",
+            "case": case_name,
+            "reason": reason,
+            "executed": False,
+            "unavailable": f"ARGUS not importable from {argus_src!r}: {e}",
+        }
+
+    ok, detail = backend_available()
+    if not ok:
+        return {
+            "handoff": "argus", "case": case_name, "reason": reason,
+            "executed": False, "unavailable": f"backend unavailable: {detail}",
+        }
+
+    prompt = (
+        "You are the deep-investigation stage of a SOC escalation pipeline. "
+        "A local triage model flagged the alert below for escalation.\n\n"
+        f"Escalation reason: {reason}\n\n"
+        f"--- ALERT ---\n{alert_text}\n"
+        "--- END ALERT ---\n\n"
+        "Produce a concise investigation: (1) what most likely happened, "
+        "(2) the specific next evidence you would pull and from which source, "
+        "(3) containment actions warranted right now, "
+        "(4) what would make this a false positive. Be specific and terse."
+    )
+    print(f"  -> running real ARGUS investigation (backend: {get_backend()})")
+    try:
+        out = call_llm(prompt, max_tokens=900)
+    except Exception as e:
+        return {
+            "handoff": "argus", "case": case_name, "reason": reason,
+            "executed": False, "error": f"{type(e).__name__}: {e}",
+        }
+
+    text, meta = out if isinstance(out, tuple) else (out, {})
+    print("\n--- ARGUS investigation ---")
+    print(text)
+    return {
+        "handoff": "argus",
+        "case": case_name,
+        "reason": reason,
+        "executed": True,
+        "backend": (meta or {}).get("backend", get_backend()),
+        "investigation": text,
+    }
+
+
 def run_argus_handoff(case_name: str, reason: str) -> dict:
     """Hand off to ARGUS for deep investigation.
 
@@ -203,7 +332,8 @@ def run_argus_handoff(case_name: str, reason: str) -> dict:
     }
 
 
-def run_pipeline(alert_text: str, case_name: str = "demo-case") -> dict:
+def run_pipeline(alert_text: str, case_name: str = "demo-case",
+                 argus_exec: bool = False) -> dict:
     print("=== Stage 1: Detection-as-Code alert ===")
     print(alert_text)
 
@@ -229,7 +359,16 @@ def run_pipeline(alert_text: str, case_name: str = "demo-case") -> dict:
 
     if escalate:
         print("\n=== Stage 3: ARGUS handoff ===")
-        handoff = run_argus_handoff(case_name, reason)
+        if argus_exec:
+            handoff = run_argus_investigation(case_name, alert_text, reason)
+            if not handoff.get("executed"):
+                # ARGUS not reachable from this host -- fall back to printing
+                # the handoff rather than failing the run.
+                why = handoff.get("unavailable") or handoff.get("error")
+                print(f"  (real ARGUS run unavailable: {why})")
+                handoff = run_argus_handoff(case_name, reason)
+        else:
+            handoff = run_argus_handoff(case_name, reason)
         return {"triage": result, "escalated": True, "argus_handoff": handoff}
 
     return {"triage": result, "escalated": False}
@@ -247,7 +386,13 @@ def main():
         "--alert-json",
         help="path to a REAL Wazuh alert (a line from /var/ossec/logs/alerts/alerts.json)",
     )
+    src.add_argument("--scenario", help="run a threat-intel scenario from pipeline/scenarios/")
     parser.add_argument("--list", action="store_true", help="list built-in demo alerts and exit")
+    parser.add_argument("--list-scenarios", action="store_true",
+                        help="list threat-intel scenarios and exit")
+    parser.add_argument("--argus-exec", action="store_true",
+                        help="on escalation, run a REAL ARGUS investigation "
+                             "(requires ARGUS installed on this host)")
     parser.add_argument("--case-name", default="demo-case", help="case name used in the ARGUS handoff")
     parser.add_argument("--json", action="store_true", help="print only the final JSON result")
     args = parser.parse_args()
@@ -257,7 +402,32 @@ def main():
             print(f"{name:18} rule {spec['rule_id']} (level {spec['level']}) -- {spec['description']}")
         return
 
-    if args.alert_json:
+    if args.list_scenarios:
+        names = list_scenarios()
+        if not names:
+            print(f"No scenarios found in {SCENARIO_DIR}")
+            return
+        for name in names:
+            try:
+                sc = load_scenario(name)
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"{name:26} <unreadable: {e}>")
+                continue
+            src_t = sc.get("source", {}).get("telemetry", "?")
+            print(f"{name:26} {sc.get('title', '')}")
+            print(f"{'':26} source: {src_t}")
+        return
+
+    if args.scenario:
+        try:
+            sc = load_scenario(args.scenario)
+        except (ValueError, OSError, json.JSONDecodeError) as e:
+            sys.exit(f"Could not load --scenario: {e}")
+        alert = format_scenario(sc)
+        print(f"(scenario: {sc.get('title')})")
+        print(f"(source: {sc.get('source', {}).get('telemetry')} "
+              f"| provenance: {sc.get('source', {}).get('provenance')})\n")
+    elif args.alert_json:
         try:
             raw = load_wazuh_alert(args.alert_json)
         except (OSError, ValueError) as e:
@@ -276,7 +446,7 @@ def main():
     else:
         alert = format_wazuh_alert(**DEMO_ALERTS[args.alert_id or "asyncrat"])
 
-    final = run_pipeline(alert, case_name=args.case_name)
+    final = run_pipeline(alert, case_name=args.case_name, argus_exec=args.argus_exec)
 
     if args.json:
         print(json.dumps(final, indent=2))

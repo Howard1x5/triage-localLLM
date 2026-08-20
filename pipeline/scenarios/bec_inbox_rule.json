@@ -1,0 +1,51 @@
+{
+  "scenario": "bec_inbox_rule",
+  "title": "M365 BEC: malicious inbox rule hiding financial correspondence",
+  "source": {
+    "telemetry": "Microsoft 365 Unified Audit Log (Exchange Online mailbox audit)",
+    "detection": "Correlation: anomalous sign-in followed by New-InboxRule within the same session",
+    "provenance": "synthetic",
+    "provenance_note": "This scenario is NOT from Wazuh or Sysmon. Inbox-rule abuse is only visible in the M365 Unified Audit Log, so the fields below mirror an Exchange Online audit record rather than endpoint telemetry. Representing it as a Wazuh alert would misrepresent where this detection actually comes from."
+  },
+  "intel": {
+    "campaign": "Generic 2026 M365 business email compromise",
+    "summary": "Attackers do not exploit their way into M365, they sign in with a valid session obtained through AiTM phishing or credential theft. The single most common persistence step that follows is a server-side inbox rule that auto-files or forwards anything matching financial keywords, so the legitimate user never sees the fraudulent thread.",
+    "why_this_matters": "A password reset alone does not remove an inbox rule. If the rule is missed, the attacker keeps visibility into invoice and wire traffic after the account is supposedly recovered.",
+    "observed_kill_chain": [
+      "AiTM phishing page proxies the real M365 login and captures the session token",
+      "Attacker replays the session, bypassing MFA entirely",
+      "New-InboxRule created to move financial keywords to a rarely-checked folder",
+      "Fraudulent wire-transfer thread proceeds invisibly to the real mailbox owner"
+    ]
+  },
+  "mitre": {
+    "id": ["T1564.008", "T1114.003", "T1078.004"],
+    "tactic": ["Defense Evasion", "Collection", "Persistence"],
+    "technique": [
+      "Hide Artifacts: Email Hiding Rules",
+      "Email Collection: Email Forwarding Rule",
+      "Valid Accounts: Cloud Accounts"
+    ]
+  },
+  "timestamp": "2026-08-20T14:07:55.000+0000",
+  "alert": {
+    "level": 12,
+    "description": "M365 BEC: inbox rule created to hide financial keywords immediately after anomalous sign-in",
+    "host": "Exchange Online",
+    "user": "a.pearce@contoso-example.com",
+    "fields": {
+      "Operation": "New-InboxRule",
+      "RuleName": "...",
+      "MoveToFolder": "RSS Subscriptions",
+      "SubjectOrBodyContainsWords": "invoice; wire; payment; ACH; remittance; bank detail",
+      "MarkAsRead": "True",
+      "StopProcessingRules": "True",
+      "ClientIP": "198.51.100.77",
+      "ClientIPLocation": "Lagos, NG",
+      "UserAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+      "PrecedingSignIn": "SessionId 8f2c4a19 -- token replay, MFA claim present but not freshly satisfied",
+      "PriorSignInLocation": "Denver, US (4 hours earlier)"
+    }
+  },
+  "analyst_note": "Rule name is a single character or blank in most real BEC cases -- it renders as near-invisible in the Outlook rules UI. MarkAsRead plus StopProcessingRules together are the strongest single indicator that this rule exists to hide mail rather than organise it."
+}

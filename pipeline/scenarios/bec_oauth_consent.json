@@ -1,0 +1,52 @@
+{
+  "scenario": "bec_oauth_consent",
+  "title": "M365 BEC: illicit OAuth consent grant for post-reset persistence",
+  "source": {
+    "telemetry": "Microsoft Entra ID audit log (Consent to application)",
+    "detection": "Consent granted to a non-gallery multitenant app requesting mail scopes, from an unfamiliar session",
+    "provenance": "synthetic",
+    "provenance_note": "Entra-sourced, not endpoint. OAuth consent grants appear in the Entra audit log and Microsoft Graph, never in Sysmon, so no Wazuh rule is claimed for this scenario."
+  },
+  "intel": {
+    "campaign": "Illicit consent grant / OAuth persistence following AiTM BEC",
+    "summary": "After stealing a session, the attacker registers or reuses a multitenant OAuth application and induces consent for mail-read and offline-access scopes. The resulting refresh token is independent of the user's password, so it survives a password reset and, depending on configuration, an MFA re-registration too.",
+    "scale_note": "Microsoft documented a single financially-motivated actor creating roughly 17,000 multitenant OAuth applications and sending over 927,000 phishing emails through the resulting access.",
+    "observed_kill_chain": [
+      "Session stolen via AiTM phishing",
+      "Attacker directs the compromised session to an OAuth consent URL",
+      "Consent granted for Mail.Read, Mail.Send, offline_access",
+      "Refresh token issued -- persistence no longer depends on the password",
+      "Mailbox read and phishing sent from the legitimate tenant"
+    ]
+  },
+  "mitre": {
+    "id": ["T1528", "T1550.001", "T1098.003"],
+    "tactic": ["Credential Access", "Defense Evasion", "Persistence"],
+    "technique": [
+      "Steal Application Access Token",
+      "Use Alternate Authentication Material: Application Access Token",
+      "Account Manipulation: Additional Cloud Roles"
+    ]
+  },
+  "timestamp": "2026-08-20T14:31:09.000+0000",
+  "alert": {
+    "level": 13,
+    "description": "M365 BEC: consent granted to unverified multitenant app requesting mail and offline-access scopes",
+    "host": "Microsoft Entra ID",
+    "user": "a.pearce@contoso-example.com",
+    "fields": {
+      "Operation": "Consent to application",
+      "ApplicationDisplayName": "Office365 Doc Sync",
+      "ApplicationId": "b7d4f2e1-0000-4a3c-9f11-example00001",
+      "PublisherVerified": "False",
+      "AppOwnerTenantId": "not-in-this-tenant (multitenant)",
+      "ConsentType": "User (individual consent, not admin)",
+      "Scopes": "Mail.Read, Mail.Send, offline_access, User.Read",
+      "ClientIP": "198.51.100.77",
+      "ClientIPLocation": "Lagos, NG",
+      "SessionId": "8f2c4a19",
+      "RelatedActivity": "Same session that created inbox rule 23 minutes earlier"
+    }
+  },
+  "analyst_note": "offline_access is the field that matters most -- it is what mints the refresh token that outlives a password reset. PublisherVerified=False on an app requesting Mail.Send is close to conclusive on its own."
+}
