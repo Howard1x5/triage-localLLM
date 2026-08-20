@@ -12,9 +12,14 @@ SSH to the triage host, then:
 cd ~/triage-local && source venv/bin/activate
 export TRIAGE_LOCAL_PATH=~/triage-local
 export OLLAMA_URL='http://[::1]:11434/api/generate'
+export TRIAGE_SEED=42          # pins the sampler so runs are reproducible
 
 python3 pipeline/pipeline.py --scenario cve_2026_42897_exchange
 ```
+
+`TRIAGE_SEED` matters for a live demo: without it the same alert can come
+back HIGH on one run and CRITICAL on the next, which changes whether the
+ARGUS stage fires. With it, verified identical across repeated runs.
 
 That one escalates. If you only run one thing, run that.
 
@@ -160,8 +165,17 @@ running it, which is the honest default.
 **Most scenarios do not escalate.** Three of four typically return HIGH at
 80% confidence, just under threshold. Do not act surprised — lead with it.
 
-**Severity varies between runs.** Temperature 0.1, no seed. Covered above;
-the short version is never predict the output before you run it.
+**Severity varies between runs — unless you set `TRIAGE_SEED`.** At
+temperature 0.1 with no seed, the same alert can return HIGH on one run and
+CRITICAL on the next, which flips whether stage 3 fires. Export
+`TRIAGE_SEED=42` (as in the setup block) and it is reproducible; verified
+identical across repeated runs. Without it, never predict the output before
+you run it.
+
+If an interviewer asks why a seed is set: same alert should produce the same
+verdict. Reproducibility is a property you want in triage tooling, not just
+a demo convenience — "why was this HIGH yesterday and CRITICAL today" is a
+question worth being able to answer.
 
 **Scenario telemetry is synthetic.** Derived from published threat
 reporting, not captured from anyone's production environment. The only
