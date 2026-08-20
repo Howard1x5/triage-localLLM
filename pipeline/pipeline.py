@@ -139,20 +139,41 @@ def format_real_wazuh_alert(alert: dict) -> str:
 
 
 def load_wazuh_alert(path: str) -> dict:
-    """Load a Wazuh alert from a file containing one alerts.json line (or a
-    whole alerts.json, in which case the last parseable alert is used)."""
-    last = None
+    """Load a Wazuh alert from either a pretty-printed single alert or a raw
+    alerts.json (JSON Lines, one alert per line -- the last one is used).
+
+    Both shapes matter in practice: alerts.json on the manager is JSON Lines,
+    but a single alert saved out for a demo is usually pretty-printed. Parse
+    the whole file as one object first, and only fall back to line-by-line if
+    that fails -- doing it the other way round makes a pretty-printed file
+    parse a bare quoted line (e.g. a lone string value) as the "alert".
+    """
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                last = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        content = fh.read()
+
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and parsed and isinstance(parsed[-1], dict):
+            return parsed[-1]
+    except json.JSONDecodeError:
+        pass
+
+    last = None
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            last = candidate
+
     if last is None:
-        raise ValueError(f"no parseable JSON alert found in {path!r}")
+        raise ValueError(f"no parseable JSON alert object found in {path!r}")
     return last
 
 
