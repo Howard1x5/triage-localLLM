@@ -237,7 +237,9 @@ triage-localLLM/
 └── .env.example
 ```
 
-## Roadmap: SOC Pipeline Integration
+## SOC Pipeline Integration -- Implemented
+
+See [`pipeline/`](https://github.com/Howard1x5/triage-localLLM/tree/main/pipeline) in this repo for the real, tested glue code -- chains a real detection-as-code alert through this project's actual `triage()` and `should_escalate()` functions, with an ARGUS handoff on escalation. Stages 1->2 are tested end-to-end against a live local Ollama instance; the ARGUS invocation itself is documented and wired but not executed in the demo (see the pipeline README for exactly why).
 
 Designed to sit downstream of [detection-as-code](https://github.com/Howard1x5/detection-as-code)'s Sigma/YARA/Wazuh detections as the triage layer, and upstream of [ARGUS](https://github.com/Howard1x5/argus) for cases that need deeper investigation. High-severity or low-confidence results are intended to hand off to ARGUS rather than being resolved by triage alone. See detection-as-code's README for the full pipeline picture.
 
