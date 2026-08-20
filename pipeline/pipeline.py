@@ -99,6 +99,63 @@ DEMO_ALERTS = {
 }
 
 
+def format_real_wazuh_alert(alert: dict) -> str:
+    """Render a REAL Wazuh alert (a parsed line from /var/ossec/logs/alerts/alerts.json)
+    into the text form the triage stage consumes.
+
+    Unlike format_wazuh_alert() above, nothing here is reconstructed: every value
+    comes from an alert Wazuh actually produced, decoded by windows_eventchannel
+    from a live agent's Sysmon eventchannel forward.
+    """
+    rule = alert.get("rule", {})
+    agent = alert.get("agent", {})
+    mitre = rule.get("mitre", {})
+    eventdata = (
+        alert.get("data", {}).get("win", {}).get("eventdata", {})
+    )
+
+    lines = [
+        f"Wazuh Alert -- Rule {rule.get('id')} (Level {rule.get('level')})",
+        f"Description: {rule.get('description')}",
+    ]
+    if mitre.get("id"):
+        techniques = ", ".join(mitre["id"])
+        tactics = ", ".join(mitre.get("tactic", []))
+        lines.append(f"MITRE ATT&CK: {techniques}" + (f" ({tactics})" if tactics else ""))
+    if agent:
+        lines.append(f"Agent: {agent.get('name')} ({agent.get('ip', 'n/a')})")
+    if alert.get("timestamp"):
+        lines.append(f"Timestamp: {alert['timestamp']}")
+
+    # Surface the Sysmon fields an analyst would actually read first. The
+    # eventchannel decoder emits doubled backslashes; normalize for readability.
+    for key in ("eventType", "image", "targetObject", "details", "user",
+                "commandLine", "parentImage", "destinationIp", "destinationPort"):
+        val = eventdata.get(key)
+        if val:
+            lines.append(f"{key}: {str(val).replace(chr(92) * 2, chr(92))}")
+
+    return "\n".join(lines) + "\n"
+
+
+def load_wazuh_alert(path: str) -> dict:
+    """Load a Wazuh alert from a file containing one alerts.json line (or a
+    whole alerts.json, in which case the last parseable alert is used)."""
+    last = None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                last = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    if last is None:
+        raise ValueError(f"no parseable JSON alert found in {path!r}")
+    return last
+
+
 def run_argus_handoff(case_name: str, reason: str) -> dict:
     """Hand off to ARGUS for deep investigation.
 
@@ -165,6 +222,10 @@ def main():
     src.add_argument("--alert-id", choices=sorted(DEMO_ALERTS), help="run a built-in demo alert")
     src.add_argument("--alert-file", help="path to a file containing raw alert text")
     src.add_argument("--alert-text", help="raw alert text passed inline")
+    src.add_argument(
+        "--alert-json",
+        help="path to a REAL Wazuh alert (a line from /var/ossec/logs/alerts/alerts.json)",
+    )
     parser.add_argument("--list", action="store_true", help="list built-in demo alerts and exit")
     parser.add_argument("--case-name", default="demo-case", help="case name used in the ARGUS handoff")
     parser.add_argument("--json", action="store_true", help="print only the final JSON result")
@@ -175,7 +236,16 @@ def main():
             print(f"{name:18} rule {spec['rule_id']} (level {spec['level']}) -- {spec['description']}")
         return
 
-    if args.alert_file:
+    if args.alert_json:
+        try:
+            raw = load_wazuh_alert(args.alert_json)
+        except (OSError, ValueError) as e:
+            sys.exit(f"Could not load --alert-json {args.alert_json!r}: {e}")
+        alert = format_real_wazuh_alert(raw)
+        rid = raw.get("rule", {}).get("id")
+        print(f"(loaded real Wazuh alert: rule {rid}, agent "
+              f"{raw.get('agent', {}).get('name')})\n")
+    elif args.alert_file:
         try:
             alert = open(args.alert_file, encoding="utf-8").read()
         except OSError as e:
