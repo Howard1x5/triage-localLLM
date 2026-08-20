@@ -44,9 +44,9 @@ with `--argus-exec` on a host where ARGUS is installed (see caveats).
 python3 pipeline/pipeline.py --list-scenarios
 ```
 
-| Scenario | Source | Real result |
+| Scenario | Source | Observed result |
 |---|---|---|
-| `cve_2026_42897_exchange` | Exchange IIS/OWA + Defender | **CRITICAL, 90% → escalates** |
+| `cve_2026_42897_exchange` | Exchange IIS/OWA + Defender | CRITICAL, 90% → escalated |
 | `clickfix_stealc` | Sysmon EID 13 via Wazuh | HIGH, 80% → no escalation |
 | `bec_inbox_rule` | M365 Unified Audit Log | HIGH, 80% → no escalation |
 | `bec_oauth_consent` | Entra ID audit log | HIGH, 80% → no escalation |
@@ -58,7 +58,29 @@ python3 pipeline/pipeline.py --alert-json pipeline/samples/real_wazuh_alert_t154
 ```
 
 That one is not synthetic. Rule 100101 fired on real Sysmon telemetry from a
-real Windows agent. It returns CRITICAL and escalates.
+real Windows agent.
+
+### Results are not deterministic — know this before you demo
+
+`triage.py` calls Ollama at `temperature 0.1` with **no fixed seed**. Low
+temperature, not zero, and no seed means the same alert can land on a
+different severity between runs. Observed directly while building this: the
+captured Wazuh alert returned CRITICAL and escalated on one run, then HIGH
+and did not escalate on the next, same input.
+
+The table above is what was observed, not a guarantee.
+
+Two ways to handle it live, both fine:
+
+1. **Own it.** "This is a real model call at temperature 0.1, not a lookup
+   table, so borderline alerts land differently between runs. In production
+   you would pin a seed or lower the threshold." That answer is stronger
+   than a demo that always agrees with the slide.
+2. **Avoid the coin flip.** `cve_2026_42897_exchange` is the most reliably
+   CRITICAL of the set. Lead with it if you want the escalation path to
+   fire on the first try.
+
+Do not promise a specific severity before running the command.
 
 ---
 
@@ -81,8 +103,9 @@ That is the strongest thing you have. It is detection engineering, not a demo.
 python3 pipeline/pipeline.py --alert-json pipeline/samples/real_wazuh_alert_t1547.json
 ```
 
-Point out: real rule ID, real agent, real Sysmon event. Local model extracts
-`T1547.001` correctly and returns CRITICAL. Escalation fires.
+Point out: real rule ID, real agent, real Sysmon event, and the local model
+extracting `T1547.001` correctly. Severity varies by run (see above) — read
+out whatever it actually returns rather than predicting it.
 
 **3. Show an escalation decision that says no.**
 
@@ -90,10 +113,10 @@ Point out: real rule ID, real agent, real Sysmon event. Local model extracts
 python3 pipeline/pipeline.py --scenario bec_inbox_rule
 ```
 
-HIGH severity but 80% confidence, below threshold, so it does not escalate.
-Say plainly that this is the interesting case: the decision logic is real,
-so it sometimes declines. A pipeline that escalates everything is a pipeline
-with no logic in it.
+Typically HIGH at 80% confidence, below the escalation threshold, so it does
+not escalate. Say plainly that this is the interesting case: the decision
+logic is real, so it sometimes declines. A pipeline that escalates
+everything is a pipeline with no logic in it.
 
 **4. If they ask about the last stage**, show the captured investigation:
 
@@ -134,8 +157,11 @@ effect: stages 1-2 run on the triage host, stage 3 runs on the workstation.
 Without `--argus-exec` the pipeline prints the handoff command instead of
 running it, which is the honest default.
 
-**Most scenarios do not escalate.** Three of four return HIGH at 80%
-confidence, just under threshold. Do not act surprised — lead with it.
+**Most scenarios do not escalate.** Three of four typically return HIGH at
+80% confidence, just under threshold. Do not act surprised — lead with it.
+
+**Severity varies between runs.** Temperature 0.1, no seed. Covered above;
+the short version is never predict the output before you run it.
 
 **Scenario telemetry is synthetic.** Derived from published threat
 reporting, not captured from anyone's production environment. The only
